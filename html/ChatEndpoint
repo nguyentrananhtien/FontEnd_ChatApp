@@ -1,1 +1,42 @@
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 
+import javax.websocket.*;
+import java.net.URI;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+
+@ClientEndpoint
+public class ChatEndpoint {
+
+    private Session session;
+    private final URI uri;
+    private final Consumer<String> onMessage;
+    private final Consumer<Session> onOpen;
+    private final Consumer<CloseReason> onClose;
+    private final Consumer<Throwable> onError;
+    private final Gson gson = new Gson();
+
+    public ChatEndpoint(URI uri,
+                        Consumer<String> onMessage,
+                        Consumer<Session> onOpen,
+                        Consumer<CloseReason> onClose,
+                        Consumer<Throwable> onError) {
+        this.uri = uri;
+        this.onMessage = onMessage;
+        this.onOpen = onOpen;
+        this.onClose = onClose;
+        this.onError = onError;
+    }
+
+    public CompletableFuture<Session> connect() {
+        CompletableFuture<Session> future = new CompletableFuture<>();
+        try {
+            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
+            container.connectToServer(this, uri);
+            future.complete(session);
+        } catch (Exception e) {
+            future.completeExceptionally(e);
+        }
+        return future;
+    }
