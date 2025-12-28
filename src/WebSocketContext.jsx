@@ -28,8 +28,13 @@ export const WebSocketProvider = ({ children }) => {
                 const response = JSON.parse(event.data);
                 console.log("📩 Nhận tin:", response);
 
-                if(response.event === "GET_USER_LIST" && response.data) {
-                    setUserList(response.data);
+                if(response.event === "GET_USER_LIST") {
+                    if (response.data && Array.isArray(response.data)) {
+                        console.log("Dữ liệu User List nhận được:", response.data); // Log ra để kiểm tra
+                        setUserList(response.data);
+                    } else {
+                        console.log("Server trả về User List nhưng format lạ:", response);
+                    }
                 }
 
                 setMessages(prev => [...prev, response]);

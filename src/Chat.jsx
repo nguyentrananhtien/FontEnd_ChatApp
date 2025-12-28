@@ -63,7 +63,7 @@ const Chat = () => {
                                 background: currentChat?.name === u.name ? '#ddd' : 'transparent'
                             }}
                         >
-                            {u.name}
+                            {u.name || u.user || u.username || "Không tên"}
                         </li>
                     ))}
                 </ul>
