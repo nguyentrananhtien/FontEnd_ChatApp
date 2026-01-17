@@ -8,7 +8,8 @@ const Login = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isRegisterMode, setIsRegisterMode] = useState(false);
-  const [lastLoginEvent, setLastLoginEvent] = useState(null);
+  const [lastEvent, setLastEvent] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
   // Nếu đã có username trong localStorage, cho vào thẳng /chat
@@ -19,22 +20,47 @@ const Login = () => {
 
   // Lắng nghe kết quả LOGIN
   useEffect(() => {
-    const loginResponse = messages.find((msg) => msg.event === 'LOGIN');
+    const loginResponse = [...messages].reverse().find((msg) => msg.event === 'LOGIN' && !msg._processed);
     if (loginResponse) {
-      setLastLoginEvent(loginResponse); // hiển thị debug
+      setLastEvent(loginResponse);
+      setIsLoading(false);
       if (loginResponse.status === 'success') {
+        // Lưu RE_LOGIN_CODE nếu có
+        if (loginResponse.data?.RE_LOGIN_CODE) {
+          localStorage.setItem('re_login_code', loginResponse.data.RE_LOGIN_CODE);
+        }
         localStorage.setItem('chat_username', username || loginResponse.data?.user || '');
         navigate('/chat');
+      } else {
+        alert('Đăng nhập thất bại: ' + (loginResponse.mes || 'Sai tài khoản hoặc mật khẩu'));
       }
     }
   }, [messages, navigate, username]);
 
+  // Lắng nghe kết quả REGISTER
+  useEffect(() => {
+    const registerResponse = [...messages].reverse().find((msg) => msg.event === 'REGISTER' && !msg._processed);
+    if (registerResponse) {
+      setLastEvent(registerResponse);
+      setIsLoading(false);
+      if (registerResponse.status === 'success') {
+        alert('✅ Đăng ký thành công! Bây giờ hãy đăng nhập.');
+        setIsRegisterMode(false);
+      } else {
+        alert('❌ Đăng ký thất bại: ' + (registerResponse.mes || 'Tên đăng nhập đã tồn tại'));
+      }
+    }
+  }, [messages]);
+
   const handleSubmit = () => {
     if (!username || !password) return alert('Vui lòng nhập đầy đủ thông tin!');
+    if (isLoading) return;
+    
+    setIsLoading(true);
+    setLastEvent(null);
+    
     if (isRegisterMode) {
       sendMessage("REGISTER", { user: username, pass: password });
-      alert('Đã gửi yêu cầu đăng ký. Hãy thử đăng nhập ngay!');
-      setIsRegisterMode(false);
     } else {
       sendMessage("LOGIN", { user: username, pass: password });
     }
@@ -79,21 +105,23 @@ const Login = () => {
           />
         </div>
 
-        <button className="btn-submit" onClick={handleSubmit} disabled={!isReady}>
-          {isRegisterMode ? 'Đăng Ký Ngay' : 'Đăng Nhập'}
+        <button className="btn-submit" onClick={handleSubmit} disabled={!isReady || isLoading}>
+          {isLoading ? '⏳ Đang xử lý...' : (isRegisterMode ? 'Đăng Ký Ngay' : 'Đăng Nhập')}
         </button>
 
         <div className="toggle-text">
           {isRegisterMode ? 'Đã có tài khoản?' : 'Chưa có tài khoản?'}
-          <span onClick={() => setIsRegisterMode(!isRegisterMode)}>
+          <span onClick={() => !isLoading && setIsRegisterMode(!isRegisterMode)}>
             {isRegisterMode ? 'Đăng nhập' : 'Đăng ký ngay'}
           </span>
         </div>
 
-        {/* Debug nhanh sự kiện LOGIN mới nhất */}
-        {lastLoginEvent && (
-          <div style={{ marginTop: 12, fontSize: 12, textAlign: 'left', wordBreak: 'break-word' }}>
-            <strong>Login event:</strong> {JSON.stringify(lastLoginEvent)}
+        {/* Debug sự kiện mới nhất */}
+        {lastEvent && (
+          <div style={{ marginTop: 12, fontSize: 12, textAlign: 'left', wordBreak: 'break-word', 
+            background: lastEvent.status === 'success' ? '#d4edda' : '#f8d7da', 
+            padding: '8px', borderRadius: '5px' }}>
+            <strong>{lastEvent.event}:</strong> {lastEvent.status} - {lastEvent.mes || 'OK'}
           </div>
         )}
       </div>

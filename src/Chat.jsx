@@ -3,10 +3,14 @@ import { WebSocketContext } from './WebSocketContext';
 import { useNavigate } from 'react-router-dom';
 
 const Chat = () => {
-    const { sendMessage, messages, setMessages, userList, isAuthenticated, roomList, setRoomList, logout, isReady } = useContext(WebSocketContext);
+    const { 
+        sendMessage, messages, setMessages, userList, isAuthenticated, 
+        roomList, setRoomList, logout, isReady, hasLoadedDataRef,
+        recentChats, addToRecentChats, saveMessagesToStorage, loadMessagesFromStorage 
+    } = useContext(WebSocketContext);
 
-    // Tab: "people" hoặc "room"
-    const [activeTab, setActiveTab] = useState("people");
+    // Tab: "people", "room", hoặc "recent"
+    const [activeTab, setActiveTab] = useState("recent");
     
     // Chat cá nhân
     const [currentChat, setCurrentChat] = useState(null);
@@ -32,45 +36,54 @@ const Chat = () => {
         scrollToBottom();
     }, [messages, roomMessages]);
 
-    // Auth check & load user list
+    // Auth check & load user list - CHỈ CHẠY 1 LẦN khi authenticated
     useEffect(() => {
         if (!myUser) {
             navigate("/");
             return;
         }
 
-        if (isAuthenticated) {
+        if (isAuthenticated && !hasLoadedDataRef.current) {
+            hasLoadedDataRef.current = true;
             console.log("✅ Đã xác thực, đang tải danh sách user...");
             sendMessage("GET_USER_LIST");
-        } else {
-            console.log("⏳ Đang chờ xác thực từ server...");
+            
+            // Tự động join lại các room đã lưu trong localStorage THEO USERNAME (chỉ 1 lần)
+            const savedRooms = localStorage.getItem(`chat_room_list_${myUser}`);
+            if (savedRooms) {
+                const rooms = JSON.parse(savedRooms);
+                console.log("🏠 Đang join lại các room đã lưu cho user", myUser, ":", rooms);
+                rooms.forEach(roomName => {
+                    sendMessage("JOIN_ROOM", { name: roomName });
+                });
+            }
         }
-    }, [isAuthenticated, navigate, myUser]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isAuthenticated, myUser]);
 
-    // Debug: log tất cả messages khi có thay đổi
-    useEffect(() => {
-        console.log("📋 Tất cả tin nhắn SEND_CHAT:", messages.filter(m => m.event === "SEND_CHAT"));
-    }, [messages]);
+    // Debug: log tất cả messages khi có thay đổi (đã tắt để tránh spam)
+    // useEffect(() => {
+    //     console.log("📋 Tất cả tin nhắn SEND_CHAT:", messages.filter(m => m.event === "SEND_CHAT"));
+    // }, [messages]);
 
     // Lắng nghe tin nhắn room từ server (realtime)
     useEffect(() => {
         if (!currentRoom?.name) return;
         
         // Lọc tin nhắn trong room hiện tại từ messages global
-        // Server trả về type: 1 cho room, type: 0 cho people
-        // Hoặc type: "room" từ local message
         const roomMsgs = messages.filter(msg => {
             if (msg.event !== "SEND_CHAT" || !msg.data) return false;
             
-            const isRoomType = msg.data.type === "room" || msg.data.type === 1;
-            const isThisRoom = msg.data.to === currentRoom.name;
+            // Kiểm tra loại tin nhắn (type: "room" hoặc type: 1)
+            const msgType = msg.data.type;
+            const isRoomType = msgType === "room" || msgType === 1;
+            
+            // Kiểm tra room name - có thể nằm trong 'to' hoặc 'name'
+            const targetRoom = msg.data.to || msg.data.name;
+            const isThisRoom = targetRoom === currentRoom.name;
             
             return isRoomType && isThisRoom;
         });
-        
-        if (roomMsgs.length > 0) {
-            console.log("🏠 Tin nhắn room hiện tại:", roomMsgs);
-        }
         
         // Cập nhật roomMessages từ messages (bao gồm cả tin local và từ server)
         setRoomMessages(roomMsgs);
@@ -138,6 +151,10 @@ const Chat = () => {
             }
         };
         setMessages(prev => [...prev, myMsg]);
+        
+        // Thêm vào recent chats
+        addToRecentChats(currentChat.name, 'people', inputMes);
+        
         setInputMes("");
     };
 
@@ -146,6 +163,8 @@ const Chat = () => {
         const targetUser = searchName.trim();
         setCurrentChat({ name: targetUser });
         setSearchName("");
+        // Thêm vào recent chats
+        addToRecentChats(targetUser, 'people', '');
         // Load lịch sử chat với người này
         sendMessage("GET_PEOPLE_CHAT_MES", { name: targetUser, page: 1 });
     };
@@ -153,6 +172,8 @@ const Chat = () => {
     // Khi click vào user trong danh sách
     const handleSelectUser = (userName) => {
         setCurrentChat({ name: userName });
+        // Thêm vào recent chats
+        addToRecentChats(userName, 'people', '');
         // Load lịch sử chat với người này
         sendMessage("GET_PEOPLE_CHAT_MES", { name: userName, page: 1 });
     };
@@ -225,21 +246,34 @@ const Chat = () => {
         );
         
         if (joinResponse && (pendingRoom.action === "join" || pendingRoom.action === "create")) {
-            console.log("✅ Join room thành công:", pendingRoom.name);
+            const joinedRoomName = joinResponse.data?.name || joinResponse.data?.roomName || pendingRoom.name;
+            console.log("✅ Join room thành công:", joinedRoomName);
             // Đánh dấu đã xử lý
             setMessages(prev => prev.map(m => 
                 m === joinResponse ? { ...m, _roomProcessed: true } : m
             ));
-            // Thêm room vào list
+            
+            // Lưu room vào localStorage THEO USERNAME (backup - WebSocketContext cũng lưu)
+            if (myUser && joinedRoomName) {
+                const savedRooms = JSON.parse(localStorage.getItem(`chat_room_list_${myUser}`) || "[]");
+                if (!savedRooms.includes(joinedRoomName)) {
+                    savedRooms.push(joinedRoomName);
+                    localStorage.setItem(`chat_room_list_${myUser}`, JSON.stringify(savedRooms));
+                    console.log("💾 Đã lưu room vào localStorage cho user:", myUser, savedRooms);
+                }
+            }
+            
+            // Cập nhật roomList state
             setRoomList(prev => {
-                if (prev.includes(pendingRoom.name)) return prev;
-                return [...prev, pendingRoom.name];
+                if (prev.includes(joinedRoomName)) return prev;
+                return [...prev, joinedRoomName];
             });
+            
             // Set current room
-            setCurrentRoom({ name: pendingRoom.name });
+            setCurrentRoom({ name: joinedRoomName });
             setRoomMessages([]);
             // Load lịch sử
-            sendMessage("GET_ROOM_CHAT_MES", { name: pendingRoom.name, page: 1 });
+            sendMessage("GET_ROOM_CHAT_MES", { name: joinedRoomName, page: 1 });
             setPendingRoom(null);
         }
         
@@ -321,14 +355,18 @@ const Chat = () => {
             _timestamp: Date.now()
         };
         setMessages(prev => [...prev, myMsg]);
+        
+        // Thêm room vào recent chats
+        addToRecentChats(currentRoom.name, 'room', msgContent);
+        
         setInputMes("");
     };
 
-    // Gửi tin nhắn dựa vào tab hiện tại
+    // Gửi tin nhắn dựa vào current chat/room
     const send = () => {
-        if (activeTab === "people") {
+        if (currentChat) {
             sendPeopleChat();
-        } else {
+        } else if (currentRoom) {
             sendRoomChat();
         }
     };
@@ -353,19 +391,19 @@ const Chat = () => {
         return isIncoming || isOutgoing;
     });
     
-    // Debug: Log tất cả SEND_CHAT messages
-    useEffect(() => {
-        const chatMsgs = messages.filter(m => m.event === "SEND_CHAT");
-        if (chatMsgs.length > 0) {
-            console.log("💬 Tất cả tin nhắn SEND_CHAT:", chatMsgs);
-        }
-    }, [messages]);
+    // Debug: Log tất cả SEND_CHAT messages (đã tắt)
+    // useEffect(() => {
+    //     const chatMsgs = messages.filter(m => m.event === "SEND_CHAT");
+    //     if (chatMsgs.length > 0) {
+    //         console.log("💬 Tất cả tin nhắn SEND_CHAT:", chatMsgs);
+    //     }
+    // }, [messages]);
 
-    // Debug: Log roomList và userList
-    useEffect(() => {
-        console.log("🏠 Room List:", roomList);
-        console.log("👥 User List:", userList);
-    }, [roomList, userList]);
+    // Debug: Log roomList và userList (đã tắt)
+    // useEffect(() => {
+    //     console.log("🏠 Room List:", roomList);
+    //     console.log("👥 User List:", userList);
+    // }, [roomList, userList]);
 
     // Render giao diện
     return (
@@ -398,25 +436,47 @@ const Chat = () => {
                     </p>
                     
                     {/* Tab chuyển đổi */}
-                    <div style={{ display: 'flex', gap: '5px', marginBottom: '10px' }}>
+                    <div style={{ display: 'flex', gap: '3px', marginBottom: '10px' }}>
                         <button 
-                            onClick={() => setActiveTab("people")}
+                            onClick={() => {
+                                setActiveTab("recent");
+                            }}
+                            style={{ 
+                                flex: 1, padding: '8px', cursor: 'pointer', border: 'none', borderRadius: '5px',
+                                background: activeTab === "recent" ? '#6f42c1' : '#e9ecef',
+                                color: activeTab === "recent" ? '#fff' : '#333',
+                                fontWeight: 'bold',
+                                fontSize: '12px'
+                            }}
+                        >
+                            🕐 Gần đây
+                        </button>
+                        <button 
+                            onClick={() => {
+                                setActiveTab("people");
+                                setCurrentRoom(null);
+                            }}
                             style={{ 
                                 flex: 1, padding: '8px', cursor: 'pointer', border: 'none', borderRadius: '5px',
                                 background: activeTab === "people" ? '#007bff' : '#e9ecef',
                                 color: activeTab === "people" ? '#fff' : '#333',
-                                fontWeight: 'bold'
+                                fontWeight: 'bold',
+                                fontSize: '12px'
                             }}
                         >
-                            👤 Cá nhân
+                            👤 Online
                         </button>
                         <button 
-                            onClick={() => setActiveTab("room")}
+                            onClick={() => {
+                                setActiveTab("room");
+                                setCurrentChat(null);
+                            }}
                             style={{ 
                                 flex: 1, padding: '8px', cursor: 'pointer', border: 'none', borderRadius: '5px',
                                 background: activeTab === "room" ? '#28a745' : '#e9ecef',
                                 color: activeTab === "room" ? '#fff' : '#333',
-                                fontWeight: 'bold'
+                                fontWeight: 'bold',
+                                fontSize: '12px'
                             }}
                         >
                             🏠 Room
@@ -425,7 +485,65 @@ const Chat = () => {
                 </div>
 
                 {/* Content dựa vào Tab */}
-                {activeTab === "people" ? (
+                {activeTab === "recent" ? (
+                    // Tab Gần đây - Danh sách người đã chat
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                        <div style={{ padding: '10px 15px', fontWeight: 'bold', color: '#666', borderBottom: '1px solid #eee' }}>
+                            💬 Cuộc trò chuyện gần đây:
+                        </div>
+                        <ul style={{ listStyle: 'none', padding: 0, margin: 0, flex: 1, overflowY: 'auto' }}>
+                            {recentChats && recentChats.length > 0 ? (
+                                recentChats.map((chat, idx) => (
+                                    <li
+                                        key={idx}
+                                        onClick={() => {
+                                            if (chat.type === 'people') {
+                                                setCurrentChat({ name: chat.name });
+                                                setCurrentRoom(null);
+                                                sendMessage("GET_PEOPLE_CHAT_MES", { name: chat.name, page: 1 });
+                                            } else {
+                                                setCurrentRoom({ name: chat.name });
+                                                setCurrentChat(null);
+                                                sendMessage("GET_ROOM_CHAT_MES", { name: chat.name, page: 1 });
+                                            }
+                                        }}
+                                        style={{
+                                            padding: '12px 15px',
+                                            cursor: 'pointer',
+                                            borderBottom: '1px solid #eee',
+                                            background: (currentChat?.name === chat.name || currentRoom?.name === chat.name) ? '#e8f4f8' : 'transparent'
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                            <span style={{ fontSize: '20px' }}>
+                                                {chat.type === 'people' ? '👤' : '🏠'}
+                                            </span>
+                                            <div style={{ flex: 1, overflow: 'hidden' }}>
+                                                <div style={{ fontWeight: 'bold', color: '#333' }}>{chat.name}</div>
+                                                {chat.lastMessage && (
+                                                    <div style={{ 
+                                                        fontSize: '12px', 
+                                                        color: '#888', 
+                                                        whiteSpace: 'nowrap', 
+                                                        overflow: 'hidden', 
+                                                        textOverflow: 'ellipsis' 
+                                                    }}>
+                                                        {chat.lastMessage}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </li>
+                                ))
+                            ) : (
+                                <li style={{ padding: '20px', color: '#999', textAlign: 'center' }}>
+                                    Chưa có cuộc trò chuyện nào.<br/>
+                                    <small>Hãy chat với ai đó!</small>
+                                </li>
+                            )}
+                        </ul>
+                    </div>
+                ) : activeTab === "people" ? (
                     // Tab Chat cá nhân
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                         <div style={{ padding: '10px' }}>
@@ -529,26 +647,26 @@ const Chat = () => {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#fff' }}>
                 {/* Header */}
                 <div style={{ padding: '15px', borderBottom: '1px solid #eee', background: 'white', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                    {activeTab === "people" ? (
-                        <span>Đang chat với: <strong style={{color: '#007bff', fontSize: '18px'}}>{currentChat ? `👤 ${currentChat.name}` : "---"}</strong></span>
-                    ) : (
+                    {currentChat ? (
+                        <span>Đang chat với: <strong style={{color: '#007bff', fontSize: '18px'}}>👤 {currentChat.name}</strong></span>
+                    ) : currentRoom ? (
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span>Room: <strong style={{color: '#28a745', fontSize: '18px'}}>{currentRoom ? `🏠 ${currentRoom.name}` : "---"}</strong></span>
-                            {currentRoom && (
-                                <button 
-                                    onClick={handleLoadMoreHistory}
-                                    style={{ padding: '5px 10px', cursor: 'pointer', borderRadius: '5px', border: '1px solid #ddd', background: '#f8f9fa', fontSize: '12px' }}
-                                >
-                                    📜 Tải thêm lịch sử
-                                </button>
-                            )}
+                            <span>Room: <strong style={{color: '#28a745', fontSize: '18px'}}>🏠 {currentRoom.name}</strong></span>
+                            <button 
+                                onClick={handleLoadMoreHistory}
+                                style={{ padding: '5px 10px', cursor: 'pointer', borderRadius: '5px', border: '1px solid #ddd', background: '#f8f9fa', fontSize: '12px' }}
+                            >
+                                📜 Tải thêm lịch sử
+                            </button>
                         </div>
+                    ) : (
+                        <span style={{color: '#999'}}>Chọn một cuộc trò chuyện để bắt đầu</span>
                     )}
                 </div>
 
                 {/* Messages */}
                 <div style={{ flex: 1, padding: '20px', overflowY: 'auto', background: '#f0f2f5' }}>
-                    {activeTab === "people" ? (
+                    {currentChat ? (
                         // Tin nhắn cá nhân
                         <>
                             {displayMessages.length === 0 && <div style={{textAlign: 'center', color: '#999', marginTop: '50px'}}>Chưa có tin nhắn nào</div>}
@@ -577,7 +695,7 @@ const Chat = () => {
                                 )
                             })}
                         </>
-                    ) : (
+                    ) : currentRoom ? (
                         // Tin nhắn room
                         <>
                             {roomMessages.length === 0 && <div style={{textAlign: 'center', color: '#999', marginTop: '50px'}}>Chưa có tin nhắn trong room</div>}
@@ -607,6 +725,12 @@ const Chat = () => {
                                 )
                             })}
                         </>
+                    ) : (
+                        // Không có cuộc trò chuyện nào được chọn
+                        <div style={{textAlign: 'center', color: '#999', marginTop: '50px'}}>
+                            <div style={{ fontSize: '50px', marginBottom: '20px' }}>💬</div>
+                            <div>Chọn một cuộc trò chuyện từ danh sách bên trái</div>
+                        </div>
                     )}
                     <div ref={messagesEndRef} />
                 </div>
@@ -618,17 +742,17 @@ const Chat = () => {
                         value={inputMes}
                         onChange={e => setInputMes(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && send()}
-                        placeholder={activeTab === "people" ? "Nhập tin nhắn..." : "Nhập tin nhắn vào room..."}
-                        disabled={activeTab === "people" ? !currentChat : !currentRoom}
+                        placeholder={currentChat ? "Nhập tin nhắn..." : currentRoom ? "Nhập tin nhắn vào room..." : "Chọn người hoặc room để chat"}
+                        disabled={!currentChat && !currentRoom}
                     />
                     <button
                         onClick={send}
-                        disabled={activeTab === "people" ? !currentChat : !currentRoom}
+                        disabled={!currentChat && !currentRoom}
                         style={{ 
                             marginLeft: '10px', padding: '10px 20px', borderRadius: '20px', border: 'none', 
-                            background: activeTab === "people" ? '#007bff' : '#28a745', 
+                            background: currentChat ? '#007bff' : '#28a745', 
                             color: 'white', cursor: 'pointer', 
-                            opacity: (activeTab === "people" ? !currentChat : !currentRoom) ? 0.6 : 1 
+                            opacity: (!currentChat && !currentRoom) ? 0.6 : 1 
                         }}
                     >
                         Gửi ➤
