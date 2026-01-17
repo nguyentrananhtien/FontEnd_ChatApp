@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { WebSocketProvider } from './WebSocketContext';
-import Login from './login.jsx';
+import Login from './Login.jsx';
 import Chat from './Chat.jsx';
 
 function App() {
