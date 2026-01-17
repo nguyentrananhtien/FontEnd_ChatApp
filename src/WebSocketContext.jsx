@@ -13,10 +13,63 @@ export const WebSocketProvider = ({ children }) => {
 
     const [messages, setMessages] = useState([]);
     const [userList, setUserList] = useState([]);
+    // RoomList - sẽ được load sau khi có username
     const [roomList, setRoomList] = useState([]);
+    // Danh sách người đã chat gần đây
+    const [recentChats, setRecentChats] = useState([]);
     const socket = useRef(null);
+
+    // === HELPER FUNCTIONS: Lưu/Load tin nhắn từ localStorage ===
+    const getStorageKey = (type, targetName) => {
+        const username = localStorage.getItem("chat_username");
+        if (!username) return null;
+        return `chat_messages_${username}_${type}_${targetName}`;
+    };
+
+    const saveMessagesToStorage = (type, targetName, msgs) => {
+        const key = getStorageKey(type, targetName);
+        if (!key) return;
+        // Chỉ lưu tối đa 100 tin nhắn gần nhất
+        const toSave = msgs.slice(-100);
+        localStorage.setItem(key, JSON.stringify(toSave));
+    };
+
+    const loadMessagesFromStorage = (type, targetName) => {
+        const key = getStorageKey(type, targetName);
+        if (!key) return [];
+        const saved = localStorage.getItem(key);
+        return saved ? JSON.parse(saved) : [];
+    };
+
+    // Lưu danh sách người đã chat
+    const saveRecentChats = (chats) => {
+        const username = localStorage.getItem("chat_username");
+        if (!username) return;
+        localStorage.setItem(`chat_recent_${username}`, JSON.stringify(chats));
+    };
+
+    const loadRecentChats = () => {
+        const username = localStorage.getItem("chat_username");
+        if (!username) return [];
+        const saved = localStorage.getItem(`chat_recent_${username}`);
+        return saved ? JSON.parse(saved) : [];
+    };
+
+    // Thêm người vào danh sách chat gần đây
+    const addToRecentChats = (name, type = 'people', lastMessage = '') => {
+        setRecentChats(prev => {
+            // Loại bỏ nếu đã tồn tại
+            const filtered = prev.filter(c => !(c.name === name && c.type === type));
+            // Thêm vào đầu danh sách
+            const newChat = { name, type, lastMessage, timestamp: Date.now() };
+            const updated = [newChat, ...filtered].slice(0, 50); // Giữ tối đa 50
+            saveRecentChats(updated);
+            return updated;
+        });
+    };
     const reconnectTimeoutRef = useRef(null);
     const shouldReconnect = useRef(true);
+    const hasLoadedDataRef = useRef(false); // Track đã load data chưa
 
     const connectWebSocket = useCallback(() => {
         // Nếu đang có kết nối, đóng nó
@@ -85,7 +138,8 @@ export const WebSocketProvider = ({ children }) => {
         socket.current.onmessage = (event) => {
             try {
                 const response = JSON.parse(event.data);
-                console.log("📩 Nhận tin:", JSON.stringify(response, null, 2));
+                // Log giảm - chỉ hiển thị event name
+                // console.log("📩 Nhận:", response.event, response.status || "");
 
                 // Xử lý danh sách user
                 if (response.event === "GET_USER_LIST" && response.data) {
@@ -100,6 +154,21 @@ export const WebSocketProvider = ({ children }) => {
                     if (response.data?.RE_LOGIN_CODE) {
                         localStorage.setItem("re_login_code", response.data.RE_LOGIN_CODE);
                     }
+                    
+                    // Load roomList từ localStorage theo username
+                    const username = localStorage.getItem("chat_username");
+                    if (username) {
+                        const savedRooms = localStorage.getItem(`chat_room_list_${username}`);
+                        if (savedRooms) {
+                            const rooms = JSON.parse(savedRooms);
+                            console.log("📂 Load roomList cho user:", username, rooms);
+                            setRoomList(rooms);
+                        }
+                        // Load danh sách người đã chat
+                        const savedRecentChats = loadRecentChats();
+                        setRecentChats(savedRecentChats);
+                        console.log("📂 Load recentChats:", savedRecentChats);
+                    }
                 }
 
                 // Xử lý RE_LOGIN thất bại - xóa credentials cũ
@@ -111,26 +180,66 @@ export const WebSocketProvider = ({ children }) => {
                     window.location.href = "/";
                 }
 
-                // Xử lý tạo room - log để debug
+                // Xử lý tạo room
                 if (response.event === "CREATE_ROOM") {
-                    console.log("🏠 CREATE_ROOM response:", response);
+                    console.log("🏠 CREATE_ROOM response:", JSON.stringify(response, null, 2));
                 }
 
-                // Xử lý join room - log để debug
+                // Xử lý join room - lưu vào roomList và localStorage theo username
                 if (response.event === "JOIN_ROOM") {
-                    console.log("🚪 JOIN_ROOM response:", response);
+                    console.log("🚪 JOIN_ROOM response:", JSON.stringify(response, null, 2));
+                    if (response.status === "success") {
+                        // Lấy room name từ nhiều nguồn có thể
+                        const roomName = response.data?.name || response.data?.roomName || response.name;
+                        const username = localStorage.getItem("chat_username");
+                        console.log("🚪 Room name tìm thấy:", roomName, "cho user:", username);
+                        if (roomName && username) {
+                            setRoomList(prev => {
+                                const newList = prev.includes(roomName) ? prev : [...prev, roomName];
+                                // Lưu theo username
+                                localStorage.setItem(`chat_room_list_${username}`, JSON.stringify(newList));
+                                console.log("💾 Đã lưu roomList:", newList);
+                                return newList;
+                            });
+                        }
+                    }
+                }
+
+                // Xử lý CREATE_ROOM thành công - lưu room name
+                if (response.event === "CREATE_ROOM" && response.status === "success") {
+                    const roomName = response.data?.name || response.data?.roomName || response.name;
+                    const username = localStorage.getItem("chat_username");
+                    console.log("🏠 CREATE_ROOM - Room name tìm thấy:", roomName, "cho user:", username);
+                    if (roomName && username) {
+                        setRoomList(prev => {
+                            const newList = prev.includes(roomName) ? prev : [...prev, roomName];
+                            localStorage.setItem(`chat_room_list_${username}`, JSON.stringify(newList));
+                            return newList;
+                        });
+                    }
                 }
 
                 // Xử lý SEND_CHAT - tin nhắn đến từ người khác
                 if (response.event === "SEND_CHAT") {
-                    console.log("💬 SEND_CHAT nhận được:", JSON.stringify(response.data, null, 2));
-                    console.log("💬 Full response:", JSON.stringify(response, null, 2));
+                    // Chuyển đổi type từ server: 0 = people, 1 = room
+                    if (response.data && typeof response.data.type === 'number') {
+                        response.data.type = response.data.type === 1 ? 'room' : 'people';
+                    }
+                    
+                    // Thêm vào recent chats nếu là tin nhắn people
+                    if (response.data?.type === 'people') {
+                        const fromUser = response.data.from || response.data.name;
+                        const myUsername = localStorage.getItem("chat_username");
+                        if (fromUser && fromUser !== myUsername) {
+                            addToRecentChats(fromUser, 'people', response.data.mes);
+                        }
+                    }
                 }
 
                 // Xử lý tin nhắn dạng khác (server có thể gửi với event khác)
-                if (response.event === "ROOM_CHAT" || response.event === "RECEIVE_CHAT") {
-                    console.log("📨 Tin nhắn dạng khác:", response.event, response.data);
-                }
+                // if (response.event === "ROOM_CHAT" || response.event === "RECEIVE_CHAT") {
+                //     console.log("📨 Tin nhắn dạng khác:", response.event);
+                // }
 
                 // Lỗi User not Login
                 if (response.status === "error" && response.mes === "User not Login") {
@@ -168,7 +277,7 @@ export const WebSocketProvider = ({ children }) => {
                     data: data
                 }
             };
-            console.log("⬆️ Đang gửi payload:", JSON.stringify(payload, null, 2));
+            // console.log("⬆️ Gửi:", eventName);
             socket.current.send(JSON.stringify(payload));
         } else {
             console.warn("⚠️ Chưa kết nối, không thể gửi:", eventName);
@@ -195,13 +304,16 @@ export const WebSocketProvider = ({ children }) => {
             console.log("👋 Đã gửi yêu cầu LOGOUT");
         }
         
-        // Xóa thông tin đăng nhập
+        // Xóa thông tin đăng nhập (KHÔNG xóa room list - giữ lại theo username)
         localStorage.removeItem("chat_username");
         localStorage.removeItem("re_login_code");
+        
+        // Reset state
         setIsAuthenticated(false);
         setMessages([]);
         setUserList([]);
         setRoomList([]);
+        hasLoadedDataRef.current = false; // Reset flag để load lại khi login
         
         // Đóng socket
         if (socket.current) {
@@ -223,7 +335,14 @@ export const WebSocketProvider = ({ children }) => {
             roomList,
             setRoomList,
             logout,
-            connectionError
+            connectionError,
+            hasLoadedDataRef,
+            // Thêm các hàm và state mới
+            recentChats,
+            setRecentChats,
+            addToRecentChats,
+            saveMessagesToStorage,
+            loadMessagesFromStorage
         }}>
             {children}
         </WebSocketContext.Provider>
